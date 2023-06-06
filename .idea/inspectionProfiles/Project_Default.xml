@@ -1,0 +1,48 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="Eslint" enabled="true" level="WARNING" enabled_by_default="true" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <value>
+          <list size="19">
+            <item index="0" class="java.lang.String" itemvalue="libgeohash" />
+            <item index="1" class="java.lang.String" itemvalue="metapack-build" />
+            <item index="2" class="java.lang.String" itemvalue="sphinx" />
+            <item index="3" class="java.lang.String" itemvalue="cobs" />
+            <item index="4" class="java.lang.String" itemvalue="threaded" />
+            <item index="5" class="java.lang.String" itemvalue="stringdist" />
+            <item index="6" class="java.lang.String" itemvalue="nltk" />
+            <item index="7" class="java.lang.String" itemvalue="geoid" />
+            <item index="8" class="java.lang.String" itemvalue="fs" />
+            <item index="9" class="java.lang.String" itemvalue="rowgenerators" />
+            <item index="10" class="java.lang.String" itemvalue="fredapi" />
+            <item index="11" class="java.lang.String" itemvalue="fuzzy" />
+            <item index="12" class="java.lang.String" itemvalue="chromadb" />
+            <item index="13" class="java.lang.String" itemvalue="detectron2" />
+            <item index="14" class="java.lang.String" itemvalue="unstructured" />
+            <item index="15" class="java.lang.String" itemvalue="pandarallel" />
+            <item index="16" class="java.lang.String" itemvalue="pandas" />
+            <item index="17" class="java.lang.String" itemvalue="tqdm" />
+            <item index="18" class="java.lang.String" itemvalue="requests" />
+          </list>
+        </value>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyPep8Inspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <option name="ignoredErrors">
+        <list>
+          <option value="E262" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyUnresolvedReferencesInspection" enabled="true" level="INFORMATION" enabled_by_default="true">
+      <option name="ignoredIdentifiers">
+        <list>
+          <option value="geoid.acs.*" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="ReassignedToPlainText" enabled="false" level="WARNING" enabled_by_default="false" />
+  </profile>
+</component>

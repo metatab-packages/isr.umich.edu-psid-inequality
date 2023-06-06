@@ -14,7 +14,8 @@ Version.Major,1
 Version.Minor,1
 Version.Patch,1
 Created,2023-06-01T20:26:15
-Modified,2023-06-06T05:09:26
+Modified,2023-06-06T20:57:36
+Giturl,https://github.com/metatab-packages/isr.umich.edu-psid-inequality.git
 ""
 Section,Contacts,Email,Organization,Url,,,,
 Wrangler,Eric Busboom,eric@civicknowledge.com,Civic Knowledge,http://civicknowledge.com,,,,

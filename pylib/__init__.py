@@ -65,6 +65,12 @@ def extract_code_labels(path):
     # Create a DataFrame from the list of dictionaries
     return  pd.DataFrame(data_list)
 
+def codebook_path(pkg):
+    """Return the URL for the codebook XML file"""
+    surl = pkg.reference('source').resolved_url
+    base_name = surl.resource_file.split('.')[0]
+    return surl.set_target_file(base_name+'_codebook.xml').get_target().fspath
+
 def clean_text(s):
     """Clean up the texts and turn them into paths. """
 
@@ -109,6 +115,46 @@ def clean_code(v):
 
     assert False
 
+def update_schema(schema_term, mdf_sel, df):
+    """
+
+    Update the metadata schema for a datafile, based on the metadata for the selected columns.
+
+    :param schema_term: Schema term for the datafiel to update
+    :type schema_term: Term
+    :param mdf_sel: metadata for the set of columns
+    :type mdf_sel: Dataframe
+    :param df: Source dataframe
+    :type df: Dataframe
+    :return: Re-ordered dataframe
+    :rtype: Dataframe
+    """
+    pkg = mp.jupyter.open_source_package()
+    ss = pkg['Schema']
+    ss.args = ['DataType',  'Year', 'Label', 'Category', 'Description', 'Has_codes', 'Labels']
+
+    # Clears out all of the schema children.
+    for c in schema_term.children:
+        ss.remove_term(c)
+
+    schema_term.children = []
+
+    final_cols = ['pid'] + list(mdf_sel.name)
+
+    schema_term.new_child('Table.Column','pid', DataType='integer',Description='Constructed person id')
+
+    for idx, c in mdf_sel.iterrows():
+        t = schema_term.new_child('Table.Column', c['name'].lower())
+        t['DataType'] = 'number' if df[c['name']].dtype == 'float64' else 'integer'
+        t['Year'] = c.year
+        t['Label'] = c.label
+        t['Category'] = c.category
+        t['Description'] = (c.qtext+": "+c.etext).strip()
+
+    pkg.write()
+
+    return df[final_cols]
+
 
 def null_map(title):
     cols = mdf[mdf.category == title].name.unique()
@@ -120,3 +166,91 @@ def null_map(title):
     plt.suptitle(title + ' Nullmap', fontsize=20)
     plt.title('Yellow indicates missing data records')
     plt.tight_layout()
+
+
+def extract_metadata(pkg):
+
+    # Open up the ZIP file and get the codebook
+
+    # The Path has some useful information about the variable.
+    varis = pkg.reference('variables').dataframe()
+
+    t = varis.set_index(['TYPE', 'CATEGORY', 'TEXT', 'HEAD_WIFE', 'VAR_COUNT'])
+    t = t.stack().to_frame('NAME')
+
+    t = t.reset_index()
+    t.columns = ['type','category','text','head_wife','var_count','year','name']
+
+    varis = t
+
+    varis['path'] = varis.text.apply(clean_text)
+    varis['year'] = varis.year.apply(lambda v: int(v[1:]) )
+
+    # XML Codebook is the main source of variable information
+
+    mdf = xml_to_dataframe(codebook_path(pkg))
+    mdf['YEAR'] = pd.to_numeric(mdf.YEAR)
+    mdf.columns = [c.lower() for c in mdf.columns]
+    t = mdf.merge(varis, on= ('year','name' ))
+
+    t['qtext'] = t.qtext.apply(lambda v: v.replace('\n',' ') )
+    t['etext'] = t.etext.apply(lambda v: v.replace('\n',' ') )
+
+    return t
+
+
+def extract_labels(pkg):
+
+    labels = extract_code_labels(codebook_path(pkg))
+    labels = labels.rename(columns={'name':'column','value':'code'})
+    labels['column'] = labels['column'].str.lower()
+
+    rows = []
+    for idx, r in labels.iterrows():
+        code = clean_code(r.code)
+
+        if isinstance(code, list):
+
+            r['code'] = np.nan
+            r['low'], r['high'] = code
+        elif isinstance(code, int):
+            r['code'] = code
+        else:
+            assert False # Looks like this never actually happens
+            r['value'] = code
+
+        rows.append(r)
+
+    labels = pd.DataFrame(rows)
+    labels = labels[['column','code', 'low','high','label']]
+
+    #
+    # for columns where there is a mix of codes and high/low, move everything
+    # over to value/high/low
+    #
+
+    mixed_cols = []
+
+    for gn, g in labels.groupby('column'):
+
+        # Either all of the codes are Nan, or all of the High/Low are nan,
+        # but there should never be some of each
+
+        code_nans = g.code.isnull().sum()
+        low_nans = g.low.isnull().sum()
+        high_nans = g.high.isnull().sum()
+
+        assert low_nans == high_nans
+
+        if code_nans > 0 and low_nans > 0:
+            mixed_cols.append(gn)
+
+    mc_idx = labels.column.isin(mixed_cols)& (~labels.code.isnull())
+
+
+    labels.loc[mc_idx,'low' ] = labels.code
+    labels.loc[mc_idx,'high' ] = labels.code
+    labels.loc[mc_idx,'code' ] = np.nan
+
+    labels.sample(10)
+

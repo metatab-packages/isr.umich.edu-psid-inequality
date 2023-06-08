@@ -115,7 +115,7 @@ def clean_code(v):
 
     assert False
 
-def update_schema(schema_term, mdf_sel, df):
+def update_schema(pkg, schema_term, mdf_sel, df):
     """
 
     Update the metadata schema for a datafile, based on the metadata for the selected columns.
@@ -129,7 +129,7 @@ def update_schema(schema_term, mdf_sel, df):
     :return: Re-ordered dataframe
     :rtype: Dataframe
     """
-    pkg = mp.jupyter.open_source_package()
+
     ss = pkg['Schema']
     ss.args = ['DataType',  'Year', 'Label', 'Category', 'Description', 'Has_codes', 'Labels']
 
@@ -138,8 +138,6 @@ def update_schema(schema_term, mdf_sel, df):
         ss.remove_term(c)
 
     schema_term.children = []
-
-    final_cols = ['pid'] + list(mdf_sel.name)
 
     schema_term.new_child('Table.Column','pid', DataType='integer',Description='Constructed person id')
 
@@ -152,6 +150,8 @@ def update_schema(schema_term, mdf_sel, df):
         t['Description'] = (c.qtext+": "+c.etext).strip()
 
     pkg.write()
+
+    final_cols = ['pid'] + list(mdf_sel.name)
 
     return df[final_cols]
 
@@ -175,14 +175,15 @@ def extract_metadata(pkg):
     # The Path has some useful information about the variable.
     varis = pkg.reference('variables').dataframe()
 
-    t = varis.set_index(['TYPE', 'CATEGORY', 'TEXT', 'HEAD_WIFE', 'VAR_COUNT'])
-    t = t.stack().to_frame('NAME')
+    varis['group'] = varis.index.tolist()
 
-    t = t.reset_index()
-    t.columns = ['type','category','text','head_wife','var_count','year','name']
+    varis = varis.set_index(['TYPE', 'CATEGORY', 'TEXT', 'HEAD_WIFE', 'VAR_COUNT', 'group'])
+    varis = varis.stack().to_frame('NAME')
 
-    varis = t
-
+    varis = varis.reset_index()
+    varis.columns = ['type','category','text','head_wife','var_count','group', 'year','name']
+    varis['name'] = varis.name.replace('',None)
+    varis = varis.dropna(subset=['name'])
     varis['path'] = varis.text.apply(clean_text)
     varis['year'] = varis.year.apply(lambda v: int(v[1:]) )
 
@@ -191,12 +192,12 @@ def extract_metadata(pkg):
     mdf = xml_to_dataframe(codebook_path(pkg))
     mdf['YEAR'] = pd.to_numeric(mdf.YEAR)
     mdf.columns = [c.lower() for c in mdf.columns]
-    t = mdf.merge(varis, on= ('year','name' ))
+    mdf = mdf.merge(varis, on= ('year','name' ))
 
-    t['qtext'] = t.qtext.apply(lambda v: v.replace('\n',' ') )
-    t['etext'] = t.etext.apply(lambda v: v.replace('\n',' ') )
+    mdf['qtext'] = mdf.qtext.apply(lambda v: v.replace('\n',' ') )
+    mdf['etext'] = mdf.etext.apply(lambda v: v.replace('\n',' ') )
 
-    return t
+    return varis, mdf
 
 
 def extract_labels(pkg):
@@ -252,5 +253,71 @@ def extract_labels(pkg):
     labels.loc[mc_idx,'high' ] = labels.code
     labels.loc[mc_idx,'code' ] = np.nan
 
-    labels.sample(10)
+    return labels
 
+
+def find_year(varis, var_name, year=None):
+    """Find equivalent variables in other years"""
+
+    name_rec = varis[varis['name'] == var_name.upper()].iloc[0]
+
+    t = varis[varis.group == name_rec.group]
+    if isinstance(year, (list, tuple)):
+        df = t[t.year.isin(year)]
+    elif isinstance(year, int):
+        df = t[t.year == year]
+    else:
+        df =  t
+
+    return df
+
+def translate_year(vars, year):
+    out = []
+
+    for v in vars:
+        out.append( find_year(varis, v, year).name.values[0] )
+
+    return out
+
+def lookup_vars(varis, vars):
+    return varis[varis['name'].isin([e.upper() for e in vars])]
+
+def vars_for_year(varis, resource, year, upper=False):
+    all_cols = [e['name'] for e in resource.columns()]
+    meta = lookup_vars(varis, all_cols)
+
+    v = [e for e in meta[meta.year == year]['name'].values]
+
+    if upper:
+        return [e.upper() for e in v]
+    else:
+        return v
+
+
+def reorder_schema(r, df):
+    """Reorder the schema  for a resource"""
+
+    mdf_sel = mdf[mdf.name.isin(df.columns)].sort_values(['category', 'label', 'year'])
+
+    # We're only using the 1968 variables for family and person numbers, so move them to the top
+
+    init_cols = vars_for_year(varis, r, 1968, upper=True)
+
+    is_init = mdf_sel['name'].isin(init_cols)
+    is_si = mdf_sel.category == 'SURVEY INFORMATION'
+
+    a = mdf_sel.loc[ is_init ]
+    b = mdf_sel.loc[~is_init &  is_si]
+    c = mdf_sel.loc[~is_init & ~is_si]
+
+    mdf_sel = pd.concat([a,b,c])
+
+    display(mdf_sel)
+
+    pkg = mp.jupyter.open_source_package()
+    st = r.schema_term
+
+    return update_schema(pkg, st, mdf_sel, df)
+
+r = pkg.resource('psid_ineq')
+df = reorder_schema(r, df)

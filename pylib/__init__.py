@@ -5,14 +5,136 @@ import numpy as np
 import matplotlib.pyplot as plt
 from IPython.display import display
 
+from typing import List, Dict, Tuple, Any, Optional, Union
+
 import re
 import xml.etree.ElementTree as ET
 import pandas as pd
 
+def codebook_path(reference):
+    """Return the URL for the codebook XML file"""
+    surl = reference.resolved_url
+    base_name = surl.resource_file.split('.')[0]
+    return surl.set_target_file(base_name + '_codebook.xml').get_target().fspath
+
+
+def variables(resource, doc, env, *args, **kwargs):
+    """ Row generator function for extracting variables.
+
+    Reference this function in a Metatab file as the value of a Datafile:
+
+            Datafile: python:pylib#row_generator
+
+    The function must yield rows, with the first being headers, and subsequenct rows being data.
+
+    :param resource: The Datafile term being processed
+    :param doc: The Metatab document that contains the term being processed
+    :param args: Positional arguments passed to the generator
+    :param kwargs: Keyword arguments passed to the generator
+    :return:
+
+
+    The env argument is a dict with these environmental keys:
+
+    * CACHE_DIR
+    * RESOURCE_NAME
+    * RESOLVED_URL
+    * WORKING_DIR
+    * METATAB_DOC
+    * METATAB_WORKING_DIR
+    * METATAB_PACKAGE
+
+    It also contains key/value pairs for all of the properties of the resource.
+
+    """
+
+    return extract_varis(doc)
+
+def extract_varis(pkg):
+    # Open up the ZIP file and get the codebook
+
+    # The Path has some useful information about the variable.
+
+    varis = pkg.reference('variables').dataframe()
+
+    varis['group'] = varis.index.tolist()
+
+    varis = varis.set_index(['TYPE', 'CATEGORY', 'TEXT', 'HEAD_WIFE', 'VAR_COUNT', 'group'])
+    varis = varis.stack().to_frame('NAME')
+
+    varis = varis.reset_index()
+    varis.columns = ['type', 'category', 'text', 'head_wife', 'var_count', 'group', 'year', 'name']
+    varis['name'] = varis.name.replace('', None)
+    varis = varis.dropna(subset=['name'])
+    varis['path'] = varis.text.apply(clean_text)
+    varis['year'] = varis.year.apply(lambda v: int(v[1:]))
+
+    return varis
+
+race_merges = {
+    9:np.nan, # DK; NA; Refused
+    8:np.nan,
+    0:np.nan,
+    6:7,
+}
+
+race_map = {
+    1: 'white',
+    2: 'black',
+    3: 'aian',
+    4: 'aapi',
+    5: 'hisp',
+    7: 'other'
+}
+
+def cmp9919_labels(resource, doc, env, *args, **kwargs):
+    return extract_code_labels(codebook_path(doc.reference('cmp9919_source')))
+
+def long_wealth_labels(resource, doc, env, *args, **kwargs):
+    df = extract_code_labels(codebook_path(doc.reference('long_wealth_source')))
+
+    # Add conversion for a constructed race variable. Using this requires mapping race codes first,
+    # using race_merges
+    rows = [{'column': 'race', 'code': k, 'category': v} for k, v in race_map.items()]
+    df = pd.concat([df, pd.DataFrame(rows)])
+
+    return df
+
+def cmp9919_dd(resource, doc, env, *args, **kwargs):
+    varis = extract_varis(doc)
+    return extract_metadata(varis, doc.reference('cmp9919_source'))
+
+def long_wealth_dd(resource, doc, env, *args, **kwargs):
+    varis = extract_varis(doc)
+    return extract_metadata(varis, doc.reference('long_wealth_source'))
+
+
+def open_dbf(reference):
+
+    surl   = reference.resolved_url
+    base_name = surl.resource_file.split('.')[0]
+    database_url = surl.set_target_file(base_name+'.dbf')
+
+    from simpledbf import Dbf5
+    dbf = Dbf5(database_url.get_target().fspath)
+    df = dbf.to_dataframe()
+
+    # Make everything as numerical as possible
+    for c in df.columns:
+        df[c] = pd.to_numeric(df[c])
+
+    return df.copy()
+
 def xml_to_dataframe(xml_file):
     """Extract variable metadata from the XML version of the codebook"""
     # Parse the XML file
-    tree = ET.parse(xml_file)
+
+    try:
+        tree = ET.parse(xml_file)
+    except ET.ParseError:
+        print(f'Failed to parse {xml_file}')
+        raise
+
     root = tree.getroot()
 
     rows = []
@@ -48,6 +170,38 @@ def extract_code_labels(path):
     # Initialize an empty list for storing dictionaries
     data_list = []
 
+    def  number_maybe(v):
+
+        try:
+            v = v.replace(',','')
+        except AttributeError:
+            return v # Either None or a number
+
+        try:
+            return int(v)
+        except ValueError:
+            pass
+
+        try:
+            return float(v)
+        except ValueError:
+            pass
+
+        return v
+
+    def split_codes(code:str):
+        if ' - ' in code:
+            low, high = code.split(' - ')
+            code = None
+        else:
+            low, high = None, None
+
+        return {
+            'code': number_maybe(code),
+            'low_code': number_maybe(low),
+            'high_code': number_maybe(high)
+        }
+
     # Loop through the VARIABLES
     for variable in root.findall('.//VARIABLE'):
         var_name = variable.find('NAME').text
@@ -55,21 +209,18 @@ def extract_code_labels(path):
         for code in variable.findall('.//CODE'):
             # Create a dictionary with variable name, code value, and code text
             data_dict = {
-                'name': var_name,
-                'value': code.find('VALUE').text,
-                'label': code.find('TEXT').text
+                'column': var_name.lower(),
+                **split_codes(code.find('VALUE').text),
+                'category': code.find('TEXT').text,
             }
             # Append the dictionary to the list
             data_list.append(data_dict)
 
     # Create a DataFrame from the list of dictionaries
-    return  pd.DataFrame(data_list)
+    return pd.DataFrame(data_list)
 
-def codebook_path(pkg):
-    """Return the URL for the codebook XML file"""
-    surl = pkg.reference('source').resolved_url
-    base_name = surl.resource_file.split('.')[0]
-    return surl.set_target_file(base_name+'_codebook.xml').get_target().fspath
+
+
 
 def clean_text(s):
     """Clean up the texts and turn them into paths. """
@@ -115,7 +266,8 @@ def clean_code(v):
 
     assert False
 
-def update_schema(pkg, schema_term, mdf_sel, df):
+
+def update_schema(resource, mdf_sel, df, extra_terms= []):
     """
 
     Update the metadata schema for a datafile, based on the metadata for the selected columns.
@@ -130,24 +282,31 @@ def update_schema(pkg, schema_term, mdf_sel, df):
     :rtype: Dataframe
     """
 
+    pkg = resource.doc
+    schema_term = resource.schema_term
+
     ss = pkg['Schema']
-    ss.args = ['DataType',  'Year', 'Label', 'Category', 'Description', 'Has_codes', 'Labels']
+    ss.args = ['DataType', 'Year', 'Label', 'Category', 'Description', 'Has_codes', 'Labels']
 
     # Clears out all of the schema children.
+
     for c in schema_term.children:
         ss.remove_term(c)
 
     schema_term.children = []
 
-    schema_term.new_child('Table.Column','pid', DataType='integer',Description='Constructed person id')
+    for t in extra_terms:
+        schema_term.new_child('Table.Column', **t)
+
 
     for idx, c in mdf_sel.iterrows():
+
         t = schema_term.new_child('Table.Column', c['name'].lower())
         t['DataType'] = 'number' if df[c['name']].dtype == 'float64' else 'integer'
         t['Year'] = c.year
         t['Label'] = c.label
         t['Category'] = c.category
-        t['Description'] = (c.qtext+": "+c.etext).strip()
+        t['Description'] = (c.qtext + ": " + c.etext).strip()
 
     pkg.write()
 
@@ -168,42 +327,25 @@ def null_map(title):
     plt.tight_layout()
 
 
-def extract_metadata(pkg):
 
-    # Open up the ZIP file and get the codebook
 
-    # The Path has some useful information about the variable.
-    varis = pkg.reference('variables').dataframe()
-
-    varis['group'] = varis.index.tolist()
-
-    varis = varis.set_index(['TYPE', 'CATEGORY', 'TEXT', 'HEAD_WIFE', 'VAR_COUNT', 'group'])
-    varis = varis.stack().to_frame('NAME')
-
-    varis = varis.reset_index()
-    varis.columns = ['type','category','text','head_wife','var_count','group', 'year','name']
-    varis['name'] = varis.name.replace('',None)
-    varis = varis.dropna(subset=['name'])
-    varis['path'] = varis.text.apply(clean_text)
-    varis['year'] = varis.year.apply(lambda v: int(v[1:]) )
-
+def extract_metadata(varis, reference):
     # XML Codebook is the main source of variable information
 
-    mdf = xml_to_dataframe(codebook_path(pkg))
+    mdf = xml_to_dataframe(codebook_path(reference))
     mdf['YEAR'] = pd.to_numeric(mdf.YEAR)
     mdf.columns = [c.lower() for c in mdf.columns]
-    mdf = mdf.merge(varis, on= ('year','name' ))
+    mdf = mdf.merge(varis, on=('year', 'name'))
 
-    mdf['qtext'] = mdf.qtext.apply(lambda v: v.replace('\n',' ') )
-    mdf['etext'] = mdf.etext.apply(lambda v: v.replace('\n',' ') )
+    mdf['qtext'] = mdf.qtext.apply(lambda v: v.replace('\n', ' '))
+    mdf['etext'] = mdf.etext.apply(lambda v: v.replace('\n', ' '))
 
-    return varis, mdf
+    return mdf
 
+def extract_labels(reference):
 
-def extract_labels(pkg):
-
-    labels = extract_code_labels(codebook_path(pkg))
-    labels = labels.rename(columns={'name':'column','value':'code'})
+    labels = extract_code_labels(codebook_path(reference))
+    labels = labels.rename(columns={'name': 'column', 'value': 'code'})
     labels['column'] = labels['column'].str.lower()
 
     rows = []
@@ -217,13 +359,13 @@ def extract_labels(pkg):
         elif isinstance(code, int):
             r['code'] = code
         else:
-            assert False # Looks like this never actually happens
+            assert False  # Looks like this never actually happens
             r['value'] = code
 
         rows.append(r)
 
     labels = pd.DataFrame(rows)
-    labels = labels[['column','code', 'low','high','label']]
+    labels = labels[['column', 'code', 'low', 'high', 'label']]
 
     #
     # for columns where there is a mix of codes and high/low, move everything
@@ -246,78 +388,139 @@ def extract_labels(pkg):
         if code_nans > 0 and low_nans > 0:
             mixed_cols.append(gn)
 
-    mc_idx = labels.column.isin(mixed_cols)& (~labels.code.isnull())
+    mc_idx = labels.column.isin(mixed_cols) & (~labels.code.isnull())
 
-
-    labels.loc[mc_idx,'low' ] = labels.code
-    labels.loc[mc_idx,'high' ] = labels.code
-    labels.loc[mc_idx,'code' ] = np.nan
+    labels.loc[mc_idx, 'low'] = labels.code
+    labels.loc[mc_idx, 'high'] = labels.code
+    labels.loc[mc_idx, 'code'] = np.nan
 
     return labels
 
+def reorder_schema(resource, mdf, df):
+    """Reorder the schema  for a resource.
+    mdf can be either varis or mdf from extract_metadata"""
 
-def find_year(varis, var_name, year=None):
-    """Find equivalent variables in other years"""
-
-    name_rec = varis[varis['name'] == var_name.upper()].iloc[0]
-
-    t = varis[varis.group == name_rec.group]
-    if isinstance(year, (list, tuple)):
-        df = t[t.year.isin(year)]
-    elif isinstance(year, int):
-        df = t[t.year == year]
-    else:
-        df =  t
-
-    return df
-
-def translate_year(vars, year):
-    out = []
-
-    for v in vars:
-        out.append( find_year(varis, v, year).name.values[0] )
-
-    return out
-
-def lookup_vars(varis, vars):
-    return varis[varis['name'].isin([e.upper() for e in vars])]
-
-def vars_for_year(varis, resource, year, upper=False):
-    all_cols = [e['name'] for e in resource.columns()]
-    meta = lookup_vars(varis, all_cols)
-
-    v = [e for e in meta[meta.year == year]['name'].values]
-
-    if upper:
-        return [e.upper() for e in v]
-    else:
-        return v
-
-
-def reorder_schema(r, df):
-    """Reorder the schema  for a resource"""
+    pkg = resource.doc
 
     mdf_sel = mdf[mdf.name.isin(df.columns)].sort_values(['category', 'label', 'year'])
 
-    # We're only using the 1968 variables for family and person numbers, so move them to the top
-
-    init_cols = vars_for_year(varis, r, 1968, upper=True)
+    init_cols = mdf_sel[mdf_sel.year == 1968].name.to_list()
 
     is_init = mdf_sel['name'].isin(init_cols)
     is_si = mdf_sel.category == 'SURVEY INFORMATION'
 
-    a = mdf_sel.loc[ is_init ]
-    b = mdf_sel.loc[~is_init &  is_si]
+    a = mdf_sel.loc[is_init]
+    b = mdf_sel.loc[~is_init & is_si]
     c = mdf_sel.loc[~is_init & ~is_si]
 
-    mdf_sel = pd.concat([a,b,c])
+    mdf_sel = pd.concat([a, b, c])
 
-    display(mdf_sel)
+    return mdf_sel
 
-    pkg = mp.jupyter.open_source_package()
-    st = r.schema_term
 
-    return update_schema(pkg, st, mdf_sel, df)
 
-r = pkg.resource('psid_ineq')
-df = reorder_schema(r, df)
+class Metadata(object):
+
+    def __init__(self,  resource=None, varis=None, mdf=None):
+
+        self.pkg = resource.doc
+        self.resource = resource
+
+        try:
+            self.pkg['Sources'] # Source packages don't have this section
+            is_build = True
+        except KeyError:
+            is_build = False
+
+        self.varis = varis if varis is not None else (
+                self.pkg.resource('variables').dataframe() if is_build
+                else extract_varis(self.pkg) )
+
+        self.mdf = mdf if mdf is not None else (
+            self.pkg.resource(self.resource.name+'_dd').dataframe() if is_build
+            else extract_metadata(self.varis, self.pkg.reference(self.resource.name+'_source')) )
+
+    def find_year(self, var_name, year=None):
+        """Find equivalent variables in other years"""
+
+        varis = self.varis
+
+        name_rec = varis[varis['name'] == var_name.upper()]
+
+        if len(name_rec):
+            name_rec = name_rec.iloc[0]
+        else:
+            return None
+
+        t = varis[varis.group == name_rec.group]
+
+        if isinstance(year, (list, tuple)):
+            df = t[t.year.isin(year)]
+        elif isinstance(year, int):
+            df = t[t.year == year]
+        else:
+            df = t
+
+        return df
+
+    def translate_year(self, vrs, year):
+        out = []
+
+        if not isinstance(vrs, list):
+            vrs = [vrs]
+
+        for v in vrs:
+            r = self.find_year(v, year)
+            if r is not None and len(r) > 0:
+                out.append(r.name.values[0])
+
+        return out
+
+    def lookup(self, vrs: List[str]):
+        """Lookup variables in the varis. Less information, but returns
+        info for every variable in PSID"""
+
+        if not isinstance(vrs, list):
+            vrs = [vrs]
+
+        vrs_u = [e.upper() for e in vrs]
+        return self.varis[self.varis['name'].isin(vrs_u)]
+
+    def codebook(self, vrs: List[str]):
+        """Like lookup, but returns info from the  more detailed metadata for this extract,
+        based on the XML codebook"""
+
+        if not isinstance(vrs, list):
+            vrs = [vrs]
+
+        vrs_u = [e.upper() for e in vrs]
+        return self.mdf[self.mdf['name'].isin(vrs_u)]
+
+    def search_label(self, v, year = None):
+        """Search for a variable by label"""
+
+        v = v.lower()
+
+        df=  self.mdf[self.mdf.label.str.lower().str.contains(v)]
+
+        if year is not None:
+            df = df[df.year == year]
+
+        return df
+
+
+    def vars_for_year(self, year, upper=False):
+
+        assert self.resource is not None
+
+        all_cols = [e['name'] for e in self.resource.columns()]
+        meta = self.lookup(all_cols)
+
+        v = [e for e in meta[meta.year == year]['name'].values]
+
+        if upper:
+            return [e.upper() for e in v]
+        else:
+            return v
+
+
